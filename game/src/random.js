@@ -1,10 +1,10 @@
-// A small seeded generator (mulberry32): one seed, one sequence, so staged scenes
-// stay repeatable. The scenes are drawn from fixed coordinates; this only adds
-// tiny decorative jitter where a painter wants it.
+// A small seeded random generator (mulberry32) so decorative scatter such as
+// the night market's stars lands identically on both panels and every run.
 
-export function createRandom(seed) {
-  let a = seed | 0;
-  return function random() {
+export function makeRandom(seed) {
+  let a = seed >>> 0;
+  return function next() {
+    a |= 0;
     a = (a + 0x6d2b79f5) | 0;
     let t = Math.imul(a ^ (a >>> 15), 1 | a);
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;

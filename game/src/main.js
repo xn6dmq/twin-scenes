@@ -1,119 +1,115 @@
-// Boot and the one loop: clicks and keys in, the game state advances with the real
-// clock, the renderer paints. Screens live in the game state (title, play, round
-// clear, all clear); this file only routes input to the right verb and plays the
-// sounds the returned events call for.
-//
-// ?shot=start|play|end (with &seed=N) stages that scene instead of running the
-// loop, paints it twice and sets window.__shotReady for a screenshot.
-import { BEST_KEY, HINT_BTN, PANEL, VIEW } from './config.js';
-import { createGame, EVENT_FOUND, EVENT_GAME_CLEAR, EVENT_HINT, EVENT_MISS, EVENT_ROUND_CLEAR, PHASE_CLEAR, PHASE_PLAY, PHASE_ROUND_CLEAR, PHASE_TITLE } from './world.js';
-import { createRenderer } from './render.js';
-import { createInput, KEY_HINT, KEY_MUTE, KEY_RESTART, KEY_START } from './input.js';
-import { createAudio } from './audio.js';
-import { stageShot } from './shots.js';
+// TWIN SCENES — boot and the game loop. Owns the browser: the canvas, the
+// input wiring, the sounds, the best score in local storage, and the
+// screenshot staging signal (window.__shotReady).
 
-const params = new URLSearchParams(window.location.search);
-const shot = params.get('shot');
+import { VIEW_W, VIEW_H, HINT_BUTTON, BEST_KEY } from './config.js';
+import { createWorld, startGame, clickAt, useHint, advance, tick } from './world.js';
+import { drawGame } from './render.js';
+import { attachInput } from './input.js';
+import { SoundBank } from './audio.js';
+import { stageFromQuery } from './shots.js';
 
 const canvas = document.getElementById('game');
-const status = document.getElementById('status');
-const game = createGame();
-const renderer = createRenderer(canvas);
-const audio = createAudio();
+const ctx = canvas.getContext('2d');
+canvas.width = VIEW_W;
+canvas.height = VIEW_H;
 
-function readBest() {
+const staged = stageFromQuery(window.location.search);
+const world = staged ?? createWorld();
+const sounds = new SoundBank();
+
+if (!staged) {
   try {
-    return Number.parseInt(window.localStorage.getItem(BEST_KEY) ?? '0', 10) || 0;
+    world.best = Number(window.localStorage.getItem(BEST_KEY) ?? 0) || 0;
   } catch {
-    return 0;
+    world.best = 0;
   }
 }
 
-function saveBest(value) {
+function saveBest() {
   try {
-    window.localStorage.setItem(BEST_KEY, String(value));
+    window.localStorage.setItem(BEST_KEY, String(world.best));
   } catch {
-    // Storage can be off (private windows): the best then lasts this visit only.
+    // Private mode or no storage: the best score just does not persist.
   }
 }
 
-let best = readBest();
-
-function playEvents(events) {
-  if (events & EVENT_GAME_CLEAR) audio.gameClear();
-  else if (events & EVENT_ROUND_CLEAR) audio.roundClear();
-  else if (events & EVENT_FOUND) audio.found();
-  if (events & EVENT_MISS) audio.miss();
-  if (events & EVENT_HINT) audio.hint();
+function inHintButton(x, y) {
+  return (
+    x >= HINT_BUTTON.x &&
+    x <= HINT_BUTTON.x + HINT_BUTTON.w &&
+    y >= HINT_BUTTON.y &&
+    y <= HINT_BUTTON.y + HINT_BUTTON.h
+  );
 }
 
-function advance() {
-  const { state } = game;
-  if (state.phase === PHASE_TITLE) {
-    game.startGame();
-    status.textContent = 'Playing. Find every difference between the two pictures.';
-  } else if (state.phase === PHASE_ROUND_CLEAR) {
-    game.nextRound();
-  } else if (state.phase === PHASE_CLEAR) {
-    game.startGame();
-  }
-}
-
-function handleClick({ x, y }) {
-  audio.unlock();
-  const { state } = game;
-  if (state.phase !== PHASE_PLAY) {
-    advance();
-    return;
-  }
-  if (x >= HINT_BTN.x && x <= HINT_BTN.x + HINT_BTN.w && y >= HINT_BTN.y && y <= HINT_BTN.y + HINT_BTN.h) {
-    playEvents(game.useHint());
-    return;
-  }
-  for (const side of ['left', 'right']) {
-    const originX = side === 'left' ? PANEL.leftX : PANEL.rightX;
-    if (x >= originX && x < originX + PANEL.w && y >= PANEL.y && y < PANEL.y + PANEL.h) {
-      playEvents(game.click(side, x - originX, y - PANEL.y));
+attachInput(canvas, {
+  onPointer(x, y) {
+    if (staged) return;
+    sounds.ensure();
+    if (inHintButton(x, y)) {
+      if (useHint(world)) sounds.chime();
       return;
     }
-  }
-}
-
-function handleKeys(keys) {
-  if (keys & KEY_MUTE) audio.toggleMute();
-  if (keys & KEY_HINT) playEvents(game.useHint());
-  if (keys & KEY_START) { audio.unlock(); advance(); }
-  if ((keys & KEY_RESTART) && game.state.phase === PHASE_CLEAR) game.startGame();
-}
-
-if (shot) {
-  stageShot(shot, game);
-  let painted = 0;
-  const paint = () => {
-    renderer.draw(game.state, best, game);
-    painted += 1;
-    if (painted < 2) requestAnimationFrame(paint);
-    else window.__shotReady = true;
-  };
-  requestAnimationFrame(paint);
-} else {
-  const input = createInput(canvas, VIEW);
-  let last = performance.now();
-  let wasPhase = game.state.phase;
-  const frame = (now) => {
-    requestAnimationFrame(frame);
-    const dt = Math.min((now - last) / 1000, 0.25);
-    last = now;
-    for (const click of input.takeClicks()) handleClick(click);
-    handleKeys(input.takeKeys());
-    game.tick(dt);
-    if (game.state.phase === PHASE_CLEAR && wasPhase !== PHASE_CLEAR && game.state.score > best) {
-      best = game.state.score;
-      saveBest(best);
+    if (world.screen === 'title') {
+      startGame(world);
+      return;
     }
-    wasPhase = game.state.phase;
-    renderer.draw(game.state, best, game);
-  };
-  status.textContent = 'Twin Scenes. Click or press Enter to start.';
+    if (world.screen === 'roundClear') {
+      advance(world);
+      return;
+    }
+    if (world.screen !== 'playing') return;
+    const ev = clickAt(world, x, y);
+    if (ev.type === 'find') {
+      sounds.chime();
+      if (ev.cleared) sounds.jingle();
+    } else if (ev.type === 'miss') {
+      sounds.buzz();
+    }
+  },
+  onKey(key) {
+    if (staged) return;
+    sounds.ensure();
+    if (key === 'start') {
+      if (world.screen === 'title') startGame(world);
+      else if (world.screen === 'roundClear') advance(world);
+    } else if (key === 'hint') {
+      if (useHint(world)) sounds.chime();
+    } else if (key === 'restart') {
+      if (world.screen === 'allClear') startGame(world);
+    } else if (key === 'mute') {
+      world.muted = !world.muted;
+      sounds.muted = world.muted;
+    }
+  },
+});
+
+let shotFrames = 0;
+let last = performance.now();
+
+function frame(now) {
+  const dt = Math.min(100, now - last);
+  last = now;
+  if (staged) {
+    // Staged scenes are frozen: the clock runs only so pop-in animations
+    // have settled long before the capture.
+    world.now = now;
+    shotFrames += 1;
+    if (shotFrames >= 2) window.__shotReady = true;
+  } else {
+    tick(world, dt);
+    if (world.screen === 'allClear' && !world.bestSaved) {
+      world.bestSaved = true;
+      if (world.score > world.best) {
+        world.best = world.score;
+        world.newBest = true;
+        saveBest();
+      }
+    }
+  }
+  drawGame(ctx, world, world.now);
   requestAnimationFrame(frame);
 }
+
+requestAnimationFrame(frame);

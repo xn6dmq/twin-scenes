@@ -1,49 +1,37 @@
-// Pointer and keyboard input, in the game's 1280x720 logical coordinates. The
-// canvas fills the window, so a click is mapped through its bounding box. Clicks
-// are queued (not held), keys are one-shot actions; the main loop drains both
-// every frame.
+// Pointer and keyboard input, reported in the game's logical 1280 x 720
+// coordinates whatever size the canvas is shown at.
 
-export const KEY_START = 1;
-export const KEY_HINT = 2;
-export const KEY_RESTART = 4;
-export const KEY_MUTE = 8;
+export function attachInput(canvas, handlers) {
+  function toLogical(event) {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: (event.clientX - rect.left) * (canvas.width / rect.width),
+      y: (event.clientY - rect.top) * (canvas.height / rect.height),
+    };
+  }
 
-const KEYMAP = new Map([
-  ['Space', KEY_START],
-  ['Enter', KEY_START],
-  ['KeyH', KEY_HINT],
-  ['KeyR', KEY_RESTART],
-  ['KeyM', KEY_MUTE],
-]);
+  function onPointer(event) {
+    const p = toLogical(event);
+    handlers.onPointer(p.x, p.y);
+  }
 
-export function createInput(canvas, view) {
-  const clicks = [];
-  let keys = 0;
-
-  canvas.addEventListener('pointerdown', (event) => {
-    const box = canvas.getBoundingClientRect();
-    const x = ((event.clientX - box.left) / box.width) * view.w;
-    const y = ((event.clientY - box.top) / box.height) * view.h;
-    clicks.push({ x, y });
-  });
-  window.addEventListener('keydown', (event) => {
-    const flag = KEYMAP.get(event.code);
-    if (flag && !event.repeat) {
-      keys |= flag;
+  function onKey(event) {
+    if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
+      handlers.onKey('start');
+    } else if (event.key === 'h' || event.key === 'H') {
+      handlers.onKey('hint');
+    } else if (event.key === 'r' || event.key === 'R') {
+      handlers.onKey('restart');
+    } else if (event.key === 'm' || event.key === 'M') {
+      handlers.onKey('mute');
     }
-  });
+  }
 
-  return {
-    takeClicks() {
-      const taken = clicks.slice();
-      clicks.length = 0;
-      return taken;
-    },
-    takeKeys() {
-      const taken = keys;
-      keys = 0;
-      return taken;
-    },
+  canvas.addEventListener('pointerdown', onPointer);
+  window.addEventListener('keydown', onKey);
+  return function detach() {
+    canvas.removeEventListener('pointerdown', onPointer);
+    window.removeEventListener('keydown', onKey);
   };
 }

@@ -12,7 +12,7 @@
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 
-import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-game.ts';
@@ -25,13 +25,13 @@ cpSync(join(here, 'game'), join(out, 'game'), { recursive: true });
 mkdirSync(join(out, 'screenshots'), { recursive: true });
 if (existsSync(join(here, 'screenshots'))) cpSync(join(here, 'screenshots'), join(out, 'screenshots'), { recursive: true });
 
-// TWIN SCENES hand-in check: the entry is not complete without its three real
-// renders and the scene module that draws both panels. Fail loudly here rather
-// than handing in a dossier whose screenshots are the starter's.
-import { readdirSync } from 'node:fs';
-const shotNames = readdirSync(join(here, 'screenshots')).filter((n) => !n.startsWith('.'));
-if (shotNames.length < 3) throw new Error(`twin-scenes: expected at least 3 screenshots, found ${shotNames.length}`);
-if (!existsSync(join(here, 'game', 'src', 'scenes.js'))) throw new Error('twin-scenes: game/src/scenes.js is missing');
+// Hand-in checks of our own: the entry must carry at least 3 screenshots and
+// the scene painters the game is built on, or the hand-in fails loudly.
+const shotFiles = existsSync(join(here, 'screenshots'))
+  ? readdirSync(join(here, 'screenshots')).filter((f) => !f.startsWith('.')).sort()
+  : [];
+if (shotFiles.length < 3) throw new Error(`TWIN SCENES hand-in needs at least 3 screenshots, found ${shotFiles.length}`);
+if (!existsSync(join(here, 'game', 'src', 'scenes.js'))) throw new Error('TWIN SCENES hand-in needs game/src/scenes.js');
 
 // The scorer's own caps (reference/gate.json): only text_max_bytes shapes the bytes; the others refuse an entry the
 // scorer would refuse (more than 4 screenshots or one over 256 KiB; more than 993 files in game/ or 48 MiB of game
@@ -48,5 +48,5 @@ writeFileSync(
   }),
 );
 
-// Hand-in summary: one line that says what this run actually shipped.
-console.log(`twin-scenes: handed in ${shotNames.length} screenshots (${shotNames.join(', ')}) with game/src/scenes.js`);
+// Summary of what this run handed in.
+console.log(`TWIN SCENES handed in: ${shotFiles.length} screenshots (${shotFiles.join(', ')})`);

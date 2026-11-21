@@ -1,172 +1,228 @@
-// Drawing only: the game state in, pixels out. Both panels are painted by the
-// scene painter (the twin gets the round's differences), found differences get a
-// green ring on both panels, a hint pulses gold, and a wrong click flashes a red
-// cross. The HUD keeps the remaining count big in the middle: it is the number
-// the player plays for.
-import { FONT, HINT_BTN, PANEL, ROUNDS, VIEW } from './config.js';
-import { SCENES } from './scenes.js';
-import { PHASE_CLEAR, PHASE_ROUND_CLEAR, PHASE_TITLE, roundDiffs } from './world.js';
+// TWIN SCENES — drawing, the HUD and the overlay screens.
+// Reads the world state and paints the whole 1280 x 720 frame.
 
-const BG = '#1c1f27';
-const HUD_INK = '#eef1f5';
-const MUTED = '#9aa3b2';
-const FOUND_RING = '#39d353';
-const HINT_RING = '#f2c94c';
-const MISS = '#e5534b';
+import {
+  VIEW_W,
+  VIEW_H,
+  PANEL_W,
+  PANEL_H,
+  PANEL_Y,
+  LEFT_X,
+  RIGHT_X,
+  HINT_BUTTON,
+  ROUNDS,
+  HINT_PULSE_MS,
+  MARKER_POP_MS,
+  formatTime,
+} from './config.js';
+import { paintScene, activeDifferences } from './scenes.js';
 
-export function formatTime(seconds) {
-  const whole = Math.floor(seconds);
-  const mm = String(Math.floor(whole / 60)).padStart(2, '0');
-  const ss = String(whole % 60).padStart(2, '0');
-  return `${mm}:${ss}`;
+function rr(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.arcTo(x + w, y, x + w, y + r, r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+  ctx.lineTo(x + r, y + h);
+  ctx.arcTo(x, y + h, x, y + h - r, r);
+  ctx.lineTo(x, y + r);
+  ctx.arcTo(x, y, x + r, y, r);
+  ctx.closePath();
 }
 
-export function createRenderer(canvas) {
-  const ctx = canvas.getContext('2d');
-  const view = { scale: 1, x: 0, y: 0 };
+function drawPanel(ctx, w, x, side, now) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x, PANEL_Y, PANEL_W, PANEL_H);
+  ctx.clip();
+  paintScene(ctx, x, PANEL_Y, w.round, side === 'left' ? 'orig' : 'twin');
+  ctx.restore();
 
-  function resize() {
-    const ratio = window.devicePixelRatio || 1;
-    canvas.width = Math.round(window.innerWidth * ratio);
-    canvas.height = Math.round(window.innerHeight * ratio);
-    view.scale = Math.min(canvas.width / VIEW.w, canvas.height / VIEW.h);
-    view.x = (canvas.width - VIEW.w * view.scale) / 2;
-    view.y = (canvas.height - VIEW.h * view.scale) / 2;
-  }
-
-  function text(value, x, y, size, color, align = 'left', weight = 400) {
-    ctx.font = `${weight} ${size}px ${FONT}`;
-    ctx.fillStyle = color;
-    ctx.textAlign = align;
-    ctx.textBaseline = 'alphabetic';
-    ctx.fillText(value, x, y);
-  }
-
-  function ring(x, y, r, color, width) {
-    ctx.strokeStyle = color;
-    ctx.lineWidth = width;
-    ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.stroke();
-  }
-
-  function drawPanel(side, state) {
-    const round = ROUNDS[state.roundIndex];
-    const scene = SCENES[round.scene];
-    const diffs = roundDiffs(state.roundIndex);
-    const originX = side === 'left' ? PANEL.leftX : PANEL.rightX;
-    const active = side === 'left' ? new Set() : new Set(diffs.map((d) => d.id));
-
+  // Found markers ring the difference on BOTH panels.
+  const diffs = activeDifferences(w.round);
+  for (const d of diffs) {
+    if (!w.found.includes(d.id)) continue;
+    const age = now - (w.foundAt[d.id] ?? 0);
+    const pop = age < MARKER_POP_MS ? 1.35 - 0.35 * (age / MARKER_POP_MS) : 1;
+    const alpha = Math.min(1, age / 90 + 0.25);
     ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = '#22c55e';
+    ctx.lineWidth = 5;
     ctx.beginPath();
-    ctx.rect(originX, PANEL.y, PANEL.w, PANEL.h);
-    ctx.clip();
-    ctx.translate(originX, PANEL.y);
-    scene.paint(ctx, active);
-
-    // found markers: a ring on both panels at the difference's centre
-    for (const diff of diffs) {
-      if (!state.found.has(diff.id)) continue;
-      const mark = state.marks.find((m) => m.diffId === diff.id);
-      const pop = mark ? 1 + mark.t * 0.6 : 1;
-      ring(diff.x, diff.y, diff.r * 0.62 * pop, FOUND_RING, 5);
-      ring(diff.x, diff.y, diff.r * 0.62 * pop + 5, 'rgba(57,211,83,0.35)', 3);
-    }
-    // the hinted difference pulses gold
-    if (state.hintId) {
-      const diff = diffs.find((d) => d.id === state.hintId);
-      if (diff) {
-        const pulse = 1 + Math.sin(performance.now() / 130) * 0.12;
-        ring(diff.x, diff.y, diff.r * 0.8 * pulse, HINT_RING, 4);
-      }
-    }
-    // wrong clicks flash a cross, on the panel that was clicked
-    for (const flash of state.flashes) {
-      if (flash.side !== side) continue;
-      ctx.strokeStyle = MISS;
-      ctx.globalAlpha = Math.min(1, flash.t * 1.4);
-      ctx.lineWidth = 6;
-      const s = 16;
-      ctx.beginPath();
-      ctx.moveTo(flash.x - s, flash.y - s); ctx.lineTo(flash.x + s, flash.y + s);
-      ctx.moveTo(flash.x + s, flash.y - s); ctx.lineTo(flash.x - s, flash.y + s);
-      ctx.stroke();
-      ctx.globalAlpha = 1;
-    }
-    ctx.restore();
-
-    // frame and label
-    ctx.strokeStyle = '#0d0f14';
-    ctx.lineWidth = 3;
-    ctx.strokeRect(originX, PANEL.y, PANEL.w, PANEL.h);
-    text(side === 'left' ? 'ORIGINAL' : 'TWIN', originX + 4, PANEL.y - 10, 19, MUTED, 'left', 600);
-  }
-
-  function drawHud(state, game) {
-    text('TWIN SCENES', 22, 40, 25, HUD_INK, 'left', 700);
-    text(ROUNDS[state.roundIndex].title, 22, 72, 19, MUTED);
-    const left = game.remaining();
-    text(`REMAINING ${left}`, VIEW.w / 2, 52, 40, left <= 2 ? HINT_RING : HUD_INK, 'center', 800);
-    text(`found ${state.found.size} of ${roundDiffs(state.roundIndex).length}`, VIEW.w / 2, 84, 18, MUTED, 'center');
-    text(`TIME ${formatTime(state.elapsed)}`, 862, 40, 23, HUD_INK, 'left', 600);
-    text(`SCORE ${state.score}`, 862, 72, 19, MUTED);
-    // hint button
-    ctx.fillStyle = state.hintsLeft > 0 ? '#2c6e49' : '#3a4152';
-    ctx.fillRect(HINT_BTN.x, HINT_BTN.y, HINT_BTN.w, HINT_BTN.h);
-    text(`HINT × ${state.hintsLeft}`, HINT_BTN.x + HINT_BTN.w / 2, HINT_BTN.y + 37, 22, '#ffffff', 'center', 700);
-  }
-
-  function overlay(lines, prompt) {
-    ctx.fillStyle = 'rgba(10,12,17,0.62)';
-    ctx.fillRect(0, 0, VIEW.w, VIEW.h);
-    const w = 680;
-    const h = 150 + lines.length * 36 + 70;
-    const x = (VIEW.w - w) / 2;
-    const y = (VIEW.h - h) / 2;
-    ctx.fillStyle = '#252b38';
-    ctx.fillRect(x, y, w, h);
-    ctx.strokeStyle = '#3a4152';
+    ctx.arc(x + d.x, PANEL_Y + d.y, d.r * pop, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,255,255,0.85)';
     ctx.lineWidth = 2;
-    ctx.strokeRect(x, y, w, h);
-    lines.forEach((line, i) => {
-      const isTitle = i === 0;
-      text(line, VIEW.w / 2, y + (isTitle ? 84 : 118 + (i - 1) * 36), isTitle ? 52 : 22, isTitle ? HUD_INK : MUTED, 'center', isTitle ? 800 : 400);
-    });
-    text(prompt, VIEW.w / 2, y + h - 28, 22, HINT_RING, 'center', 600);
+    ctx.beginPath();
+    ctx.arc(x + d.x, PANEL_Y + d.y, d.r * pop + 5, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
   }
 
-  function draw(state, best, game) {
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = BG;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.setTransform(view.scale, 0, 0, view.scale, view.x, view.y);
-    drawPanel('left', state);
-    drawPanel('right', state);
-    drawHud(state, game);
-    if (state.phase === PHASE_TITLE) {
-      overlay([
-        'TWIN SCENES',
-        'Two pictures, almost twins. Click every difference.',
-        'A wrong click adds 5 seconds. Three hints per game.',
-        best > 0 ? `Best score ${best}` : '',
-      ], 'Click or press Enter to start');
-    } else if (state.phase === PHASE_ROUND_CLEAR) {
-      overlay([
-        'ROUND CLEAR!',
-        `${ROUNDS[state.roundIndex].title} — every difference found.`,
-        `Score ${state.score} · Time ${formatTime(state.elapsed)}`,
-      ], 'Click or press Enter for the next round');
-    } else if (state.phase === PHASE_CLEAR) {
-      overlay([
-        'ALL CLEAR!',
-        `Every difference in all ${ROUNDS.length} scenes found.`,
-        `Final score ${state.score} · Time ${formatTime(state.elapsed)} · Mistakes ${state.mistakes}`,
-        best > 0 ? `Best score ${best}` : '',
-      ], 'Click or press R to play again');
+  // A hint pulses an unfound difference in gold on both panels.
+  if (w.hintPulse) {
+    const d = w.hintPulse.diff;
+    if (!w.found.includes(d.id)) {
+      const frac = 1 - (w.hintPulse.until - now) / HINT_PULSE_MS;
+      const pulse = 1 + 0.16 * Math.sin(now / 130);
+      ctx.save();
+      ctx.globalAlpha = 0.55 + 0.45 * Math.sin(frac * Math.PI);
+      ctx.strokeStyle = '#f5b301';
+      ctx.lineWidth = 5;
+      ctx.beginPath();
+      ctx.arc(x + d.x, PANEL_Y + d.y, d.r * pulse, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
     }
   }
 
-  resize();
-  window.addEventListener('resize', resize);
-  return { draw };
+  // Wrong-click flashes: a red cross where the player clicked.
+  for (const f of w.flashes) {
+    if (f.panel !== side) continue;
+    const left = Math.max(0, f.until - now) / 450;
+    const cx = x + f.x;
+    const cy = PANEL_Y + f.y;
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, left + 0.3);
+    ctx.strokeStyle = '#ef4444';
+    ctx.lineWidth = 6;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(cx - 14, cy - 14);
+    ctx.lineTo(cx + 14, cy + 14);
+    ctx.moveTo(cx + 14, cy - 14);
+    ctx.lineTo(cx - 14, cy + 14);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  ctx.strokeStyle = '#2c3e5a';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x, PANEL_Y, PANEL_W, PANEL_H);
+}
+
+function drawHud(ctx, w) {
+  ctx.fillStyle = '#ffffff';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  ctx.font = 'bold 30px system-ui, sans-serif';
+  ctx.fillText('TWIN SCENES', 20, 36);
+  ctx.fillStyle = '#9fb3d1';
+  ctx.font = '17px system-ui, sans-serif';
+  ctx.fillText(ROUNDS[w.round].name, 20, 64);
+
+  // Remaining counter, centred at the top.
+  const diffs = activeDifferences(w.round);
+  const left = diffs.length - w.found.length;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#9fb3d1';
+  ctx.font = 'bold 13px system-ui, sans-serif';
+  ctx.fillText('R E M A I N I N G', 640, 26);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 42px system-ui, sans-serif';
+  ctx.fillText(String(left), 640, 68);
+  ctx.fillStyle = '#9fb3d1';
+  ctx.font = '16px system-ui, sans-serif';
+  ctx.fillText(`FOUND ${w.found.length} OF ${diffs.length}`, 640, 96);
+
+  // Time and score, top right, left of the hint button.
+  ctx.textAlign = 'right';
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 20px system-ui, sans-serif';
+  ctx.fillText(`TIME ${formatTime(w.elapsed)}`, 1060, 38);
+  ctx.fillText(`SCORE ${w.score}`, 1060, 66);
+
+  // Hint button.
+  rr(ctx, HINT_BUTTON.x, HINT_BUTTON.y, HINT_BUTTON.w, HINT_BUTTON.h, 10);
+  ctx.fillStyle = w.hintsLeft > 0 ? '#1e3a5f' : '#2a3446';
+  ctx.fill();
+  ctx.strokeStyle = '#3b82f6';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.fillStyle = w.hintsLeft > 0 ? '#ffffff' : '#7a8799';
+  ctx.font = 'bold 20px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(`HINT (${w.hintsLeft})`, HINT_BUTTON.x + HINT_BUTTON.w / 2, HINT_BUTTON.y + 35);
+
+  // Panel labels, kept to the outer edges so they never meet the centred
+  // FOUND counter in the middle of the HUD.
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 16px system-ui, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('ORIGINAL', LEFT_X, 110);
+  ctx.textAlign = 'right';
+  ctx.fillText('TWIN', RIGHT_X + PANEL_W, 110);
+}
+
+function dim(ctx) {
+  ctx.fillStyle = 'rgba(8, 12, 26, 0.72)';
+  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+}
+
+function card(ctx, x, y, w, h) {
+  rr(ctx, x, y, w, h, 18);
+  ctx.fillStyle = '#16213a';
+  ctx.fill();
+  ctx.strokeStyle = '#3b82f6';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+}
+
+function centred(ctx, text, y, font, color) {
+  ctx.fillStyle = color;
+  ctx.font = font;
+  ctx.textAlign = 'center';
+  ctx.fillText(text, VIEW_W / 2, y);
+}
+
+function drawTitle(ctx, w, now) {
+  dim(ctx);
+  card(ctx, 290, 130, 700, 440);
+  centred(ctx, 'TWIN SCENES', 230, 'bold 58px system-ui, sans-serif', '#ffffff');
+  centred(ctx, 'Two pictures. One is lying. Find every difference.', 280, '20px system-ui, sans-serif', '#c7d3e8');
+  centred(ctx, 'Click a difference on either panel to ring it in green.', 330, '18px system-ui, sans-serif', '#9fb3d1');
+  centred(ctx, 'A wrong click costs 5 seconds and 25 points.', 358, '18px system-ui, sans-serif', '#9fb3d1');
+  centred(ctx, 'H or the HINT button pulses one unfound difference (3 per game).', 386, '18px system-ui, sans-serif', '#9fb3d1');
+  centred(ctx, 'M mutes the sounds. 3 rounds, 18 differences in all.', 414, '18px system-ui, sans-serif', '#9fb3d1');
+  if (w.best > 0) centred(ctx, `BEST SCORE  ${w.best}`, 462, 'bold 20px system-ui, sans-serif', '#f5b301');
+  if (Math.floor(now / 500) % 2 === 0) {
+    centred(ctx, 'Press ENTER to start', 520, 'bold 24px system-ui, sans-serif', '#ffffff');
+  }
+}
+
+function drawRoundClear(ctx, w) {
+  dim(ctx);
+  card(ctx, 340, 170, 600, 360);
+  centred(ctx, 'ROUND CLEAR!', 260, 'bold 50px system-ui, sans-serif', '#22c55e');
+  centred(ctx, ROUNDS[w.round].name, 312, '20px system-ui, sans-serif', '#c7d3e8');
+  centred(ctx, `TIME  ${formatTime(w.elapsed)}      MISTAKES  ${w.mistakes}`, 372, '20px system-ui, sans-serif', '#ffffff');
+  centred(ctx, `SCORE  ${w.score}      FOUND  ${w.totalFound} / 18`, 408, '20px system-ui, sans-serif', '#ffffff');
+  const next = w.round + 1 < ROUNDS.length ? `Press ENTER for ${ROUNDS[w.round + 1].name}` : 'Press ENTER to see your results';
+  centred(ctx, next, 478, 'bold 22px system-ui, sans-serif', '#ffffff');
+}
+
+function drawAllClear(ctx, w) {
+  dim(ctx);
+  card(ctx, 290, 130, 700, 460);
+  centred(ctx, 'ALL CLEAR!', 226, 'bold 56px system-ui, sans-serif', '#f5b301');
+  centred(ctx, 'Every difference found. The twins confess.', 276, '20px system-ui, sans-serif', '#c7d3e8');
+  centred(ctx, `FINAL SCORE  ${w.score}`, 336, 'bold 30px system-ui, sans-serif', '#ffffff');
+  centred(ctx, `TIME  ${formatTime(w.elapsed)}      MISTAKES  ${w.mistakes}`, 384, '20px system-ui, sans-serif', '#ffffff');
+  centred(ctx, `DIFFERENCES FOUND  ${w.totalFound} / 18      HINTS LEFT  ${w.hintsLeft}`, 420, '20px system-ui, sans-serif', '#ffffff');
+  if (w.newBest) centred(ctx, 'NEW BEST SCORE!', 462, 'bold 22px system-ui, sans-serif', '#f5b301');
+  else if (w.best > 0) centred(ctx, `BEST SCORE  ${w.best}`, 462, '20px system-ui, sans-serif', '#9fb3d1');
+  centred(ctx, 'Press R to play again', 528, 'bold 22px system-ui, sans-serif', '#ffffff');
+}
+
+export function drawGame(ctx, w, now) {
+  ctx.fillStyle = '#0e1526';
+  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+  drawPanel(ctx, w, LEFT_X, 'left', now);
+  drawPanel(ctx, w, RIGHT_X, 'right', now);
+  drawHud(ctx, w);
+  if (w.screen === 'title') drawTitle(ctx, w, now);
+  else if (w.screen === 'roundClear') drawRoundClear(ctx, w);
+  else if (w.screen === 'allClear') drawAllClear(ctx, w);
 }

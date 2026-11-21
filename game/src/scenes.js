@@ -1,390 +1,704 @@
-// The three scenes of TWIN SCENES. Every scene is drawn from code twice: the
-// original (no differences switched on) and its twin (the round's differences
-// switched on). A painter gets `active`, the set of difference ids in play for
-// the twin, and draws the variant wherever one of those ids applies.
-// Difference centres are in panel coordinates; the panel box is 600x540.
+// TWIN SCENES — the three scene painters and their difference tables.
+// Every scene is drawn procedurally on Canvas 2D; the twin panel is the same
+// painter with the round's differences applied. All coordinates are
+// panel-local: each panel is 600 wide and 540 tall, origin top-left.
+// A difference flagged `spare` is drawn identically on both panels, so the
+// round's counted differences are exactly the unflagged ones.
 
-function disc(ctx, x, y, r, fill) {
-  ctx.fillStyle = fill;
+import { makeRandom } from './random.js';
+
+export const DIFFERENCES = [
+  [
+    // Round 1 — The Cozy Room (5 counted, 1 spare)
+    { id: 'picture', x: 470, y: 115, r: 42 },
+    { id: 'clock', x: 300, y: 86, r: 38 },
+    { id: 'lamp', x: 470, y: 250, r: 38 },
+    { id: 'cat', x: 300, y: 430, r: 48 },
+    { id: 'flower', x: 92, y: 382, r: 30 },
+    { id: 'book', x: 208, y: 240, r: 32, spare: true },
+  ],
+  [
+    // Round 2 — The Seaside (6 counted, 1 spare)
+    { id: 'sail', x: 202, y: 256, r: 42 },
+    { id: 'sun', x: 492, y: 82, r: 46 },
+    { id: 'lighthouse', x: 495, y: 268, r: 44 },
+    { id: 'cloud', x: 238, y: 110, r: 32 },
+    { id: 'crab', x: 330, y: 462, r: 32 },
+    { id: 'shell', x: 112, y: 470, r: 26 },
+    { id: 'starfish', x: 520, y: 474, r: 26, spare: true },
+  ],
+  [
+    // Round 3 — The Night Market (7 counted)
+    { id: 'moon', x: 82, y: 72, r: 38 },
+    { id: 'lantern', x: 350, y: 96, r: 28 },
+    { id: 'awning', x: 160, y: 250, r: 46 },
+    { id: 'sign', x: 475, y: 232, r: 38 },
+    { id: 'roofcat', x: 460, y: 214, r: 30 },
+    { id: 'steam', x: 300, y: 306, r: 34 },
+    { id: 'lights', x: 545, y: 330, r: 26 },
+  ],
+];
+
+export function activeDifferences(roundIndex) {
+  return DIFFERENCES[roundIndex].filter((d) => !d.spare);
+}
+
+export function paintScene(ctx, ox, oy, roundIndex, variant) {
+  ctx.save();
+  ctx.translate(ox, oy);
+  if (roundIndex === 0) paintCozyRoom(ctx, variant);
+  else if (roundIndex === 1) paintSeaside(ctx, variant);
+  else paintNightMarket(ctx, variant);
+  ctx.restore();
+}
+
+// ---- small drawing helpers (panel-local) ----
+
+function circle(ctx, x, y, r) {
   ctx.beginPath();
   ctx.arc(x, y, r, 0, Math.PI * 2);
-  ctx.fill();
 }
 
-function box(ctx, x, y, w, h, fill) {
-  ctx.fillStyle = fill;
-  ctx.fillRect(x, y, w, h);
-}
-
-function oval(ctx, x, y, rx, ry, fill) {
-  ctx.fillStyle = fill;
+function ellipse(ctx, x, y, rx, ry) {
   ctx.beginPath();
   ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
+}
+
+function rect(ctx, x, y, w, h) {
+  ctx.beginPath();
+  ctx.rect(x, y, w, h);
+}
+
+function rr(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.arcTo(x + w, y, x + w, y + r, r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+  ctx.lineTo(x + r, y + h);
+  ctx.arcTo(x, y + h, x, y + h - r, r);
+  ctx.lineTo(x, y + r);
+  ctx.arcTo(x, y, x + r, y, r);
+  ctx.closePath();
+}
+
+function fill(ctx, color) {
+  ctx.fillStyle = color;
   ctx.fill();
 }
 
-function fiveStar(ctx, x, y, r, fill) {
-  ctx.fillStyle = fill;
+function starPath(ctx, cx, cy, rOuter, rInner, points) {
   ctx.beginPath();
-  for (let i = 0; i < 10; i += 1) {
-    const rad = i % 2 === 0 ? r : r * 0.45;
-    const a = -Math.PI / 2 + (i * Math.PI) / 5;
-    const px = x + Math.cos(a) * rad;
-    const py = y + Math.sin(a) * rad;
-    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  for (let i = 0; i < points * 2; i++) {
+    const r = i % 2 === 0 ? rOuter : rInner;
+    const a = (Math.PI * i) / points - Math.PI / 2;
+    const x = cx + Math.cos(a) * r;
+    const y = cy + Math.sin(a) * r;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
   }
   ctx.closePath();
-  ctx.fill();
 }
 
-function sleepingCat(ctx, x, y, scale, fill) {
-  oval(ctx, x, y, 30 * scale, 20 * scale, fill);
-  disc(ctx, x + 24 * scale, y - 14 * scale, 15 * scale, fill);
-  ctx.fillStyle = fill;
-  ctx.beginPath(); // ears
-  ctx.moveTo(x + 13 * scale, y - 24 * scale);
-  ctx.lineTo(x + 18 * scale, y - 36 * scale);
-  ctx.lineTo(x + 24 * scale, y - 25 * scale);
-  ctx.moveTo(x + 26 * scale, y - 25 * scale);
-  ctx.lineTo(x + 34 * scale, y - 35 * scale);
-  ctx.lineTo(x + 37 * scale, y - 22 * scale);
-  ctx.closePath();
-  ctx.fill();
-  ctx.strokeStyle = fill; // tail
-  ctx.lineWidth = 7 * scale;
+function line(ctx, x1, y1, x2, y2) {
   ctx.beginPath();
-  ctx.moveTo(x - 28 * scale, y + 6 * scale);
-  ctx.quadraticCurveTo(x - 48 * scale, y - 8 * scale, x - 40 * scale, y - 26 * scale);
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
   ctx.stroke();
 }
 
-// ---------------------------------------------------------------- the cozy room
-function paintRoom(ctx, active) {
-  box(ctx, 0, 0, 600, 400, '#f6e3c5'); // wall
-  box(ctx, 0, 400, 600, 140, '#c08552'); // floor
-  ctx.strokeStyle = 'rgba(90,55,25,0.35)';
+// ---- Round 1: The Cozy Room ----
+
+function paintCozyRoom(ctx, variant) {
+  const twin = variant === 'twin';
+
+  // Wall and wooden floor.
+  rect(ctx, 0, 0, 600, 340);
+  fill(ctx, '#f6e7c6');
+  rect(ctx, 0, 340, 600, 200);
+  fill(ctx, '#8b5a2b');
+  ctx.strokeStyle = '#6e451f';
   ctx.lineWidth = 2;
-  for (let x = 60; x < 600; x += 90) {
-    ctx.beginPath();
-    ctx.moveTo(x, 404);
-    ctx.lineTo(x - 20, 540);
-    ctx.stroke();
-  }
+  [380, 420, 460, 500].forEach((y) => line(ctx, 0, y, 600, y));
+  ctx.lineWidth = 1.5;
+  [120, 300, 480].forEach((x) => line(ctx, x, 340, x, 380));
+  [60, 240, 420, 560].forEach((x) => line(ctx, x, 380, x, 420));
+  [180, 360, 540].forEach((x) => line(ctx, x, 420, x, 460));
+  [90, 270, 450].forEach((x) => line(ctx, x, 460, x, 500));
+  [150, 330, 510].forEach((x) => line(ctx, x, 500, x, 540));
+  rect(ctx, 0, 334, 600, 8);
+  fill(ctx, '#a9805a');
 
-  // window with a little hill view
-  box(ctx, 40, 50, 160, 180, '#8a5a33');
-  box(ctx, 50, 60, 140, 160, '#bfe3f0');
-  oval(ctx, 120, 208, 78, 30, '#8fce7e');
-  disc(ctx, 88, 96, 20, '#ffd94d');
-  box(ctx, 112, 60, 6, 160, '#8a5a33');
-  box(ctx, 34, 44, 18, 192, '#d96f4e');
-  box(ctx, 188, 44, 18, 192, '#d96f4e');
-
-  // picture frame: a star in the original, a moon in the twin
-  box(ctx, 400, 60, 140, 110, '#7a4a21');
-  box(ctx, 410, 70, 120, 90, '#ffe9a8');
-  if (active.has('picture')) {
-    disc(ctx, 470, 115, 26, '#f2b134');
-    disc(ctx, 482, 106, 22, '#ffe9a8');
-  } else {
-    fiveStar(ctx, 470, 115, 28, '#e8833a');
-  }
-
-  // wall clock: three o'clock, or half past six in the twin
-  disc(ctx, 300, 86, 36, '#6b4423');
-  disc(ctx, 300, 86, 30, '#fff8ea');
-  ctx.strokeStyle = '#333a45';
-  ctx.lineWidth = 4;
-  ctx.beginPath();
-  if (active.has('clock')) {
-    ctx.moveTo(300, 86); ctx.lineTo(292, 104); // hour hand down-left
-    ctx.moveTo(300, 86); ctx.lineTo(300, 110); // minute hand down
-  } else {
-    ctx.moveTo(300, 86); ctx.lineTo(322, 86); // hour hand right
-    ctx.moveTo(300, 86); ctx.lineTo(300, 62); // minute hand up
-  }
-  ctx.stroke();
-
-  // bookshelf: four books, or three in the twin (one is gone)
-  box(ctx, 56, 268, 260, 14, '#8a5a33');
-  const books = [[70, '#c94f4f', 26], [100, '#4f79c9', 22], [126, '#58a05c', 24], [154, '#8e6cc8', 20]];
-  for (const [bx, color, bw] of books) box(ctx, bx, 268 - 58, bw, 58, color);
-  if (!active.has('book')) box(ctx, 196, 268 - 52, 24, 52, '#e0a83c');
-
-  // side table and lamp: a warm shade, or teal in the twin
-  box(ctx, 415, 330, 140, 14, '#8a5a33');
-  box(ctx, 428, 344, 10, 60, '#8a5a33');
-  box(ctx, 522, 344, 10, 60, '#8a5a33');
-  box(ctx, 466, 268, 8, 62, '#5d4028');
-  ctx.fillStyle = active.has('lamp') ? '#3fa7a0' : '#f2a541';
-  ctx.beginPath();
-  ctx.moveTo(448, 268); ctx.lineTo(492, 268); ctx.lineTo(482, 226); ctx.lineTo(458, 226);
-  ctx.closePath(); ctx.fill();
-  if (!active.has('lamp')) disc(ctx, 470, 282, 26, 'rgba(255,190,80,0.35)');
-
-  // rug and the cat that may or may not be napping on it
-  oval(ctx, 300, 452, 150, 34, '#b5524a');
-  oval(ctx, 300, 452, 105, 22, '#d98a80');
-  if (!active.has('cat')) sleepingCat(ctx, 292, 436, 1, '#4a4f5e');
-
-  // potted plant: a pink flower, or a yellow one in the twin
-  ctx.fillStyle = '#b5651d';
-  ctx.beginPath();
-  ctx.moveTo(66, 420); ctx.lineTo(118, 420); ctx.lineTo(108, 472); ctx.lineTo(76, 472);
-  ctx.closePath(); ctx.fill();
-  ctx.strokeStyle = '#4e7d46';
-  ctx.lineWidth = 5;
-  for (const dx of [-16, 0, 16]) {
-    ctx.beginPath();
-    ctx.moveTo(92, 424);
-    ctx.quadraticCurveTo(92 + dx, 400, 92 + dx * 1.4, 388);
-    ctx.stroke();
-  }
-  disc(ctx, 92, 382, 11, active.has('flower') ? '#f2c94c' : '#e56b9f');
-  disc(ctx, 92, 382, 4, '#fff3f8');
-}
-
-// ---------------------------------------------------------------- the seaside
-function paintSeaside(ctx, active) {
-  const sky = ctx.createLinearGradient(0, 0, 0, 300);
-  sky.addColorStop(0, '#aee2f5');
-  sky.addColorStop(1, '#e8f7ff');
-  box(ctx, 0, 0, 600, 300, sky);
-  box(ctx, 0, 300, 600, 120, '#3d8bc2'); // sea
-  ctx.strokeStyle = 'rgba(255,255,255,0.55)';
-  ctx.lineWidth = 3;
-  for (const [wx, wy] of [[80, 330], [240, 356], [420, 336], [520, 372], [150, 386]]) {
-    ctx.beginPath();
-    ctx.moveTo(wx, wy);
-    ctx.quadraticCurveTo(wx + 16, wy - 8, wx + 32, wy);
-    ctx.stroke();
-  }
-  box(ctx, 0, 420, 600, 120, '#f2d492'); // sand
-
-  // sun: plain, or wearing sunglasses in the twin
-  disc(ctx, 492, 82, 38, '#ffd94d');
-  ctx.strokeStyle = '#ffd94d';
-  ctx.lineWidth = 5;
-  for (let i = 0; i < 8; i += 1) {
-    const a = (i * Math.PI) / 4;
-    ctx.beginPath();
-    ctx.moveTo(492 + Math.cos(a) * 46, 82 + Math.sin(a) * 46);
-    ctx.lineTo(492 + Math.cos(a) * 58, 82 + Math.sin(a) * 58);
-    ctx.stroke();
-  }
-  if (active.has('sun')) {
-    box(ctx, 458, 66, 68, 16, '#232733');
-    disc(ctx, 472, 90, 11, '#232733');
-    disc(ctx, 512, 90, 11, '#232733');
-  }
-
-  // clouds: one, or a second small one in the twin
-  const cloud = (x, y, s) => {
-    oval(ctx, x, y, 44 * s, 20 * s, '#ffffff');
-    oval(ctx, x + 26 * s, y + 4 * s, 32 * s, 15 * s, '#ffffff');
-    oval(ctx, x - 28 * s, y + 5 * s, 28 * s, 13 * s, '#ffffff');
-  };
-  cloud(140, 84, 1);
-  if (active.has('cloud')) cloud(238, 112, 0.55);
-
-  // sailboat: a white sail, or a red one in the twin
-  ctx.fillStyle = '#a5542f';
-  ctx.beginPath();
-  ctx.moveTo(140, 300); ctx.lineTo(250, 300); ctx.lineTo(228, 326); ctx.lineTo(160, 326);
-  ctx.closePath(); ctx.fill();
-  box(ctx, 185, 200, 5, 100, '#6b4423');
-  ctx.fillStyle = active.has('sail') ? '#e5534b' : '#ffffff';
-  ctx.beginPath();
-  ctx.moveTo(192, 208); ctx.lineTo(192, 292); ctx.lineTo(240, 292);
-  ctx.closePath(); ctx.fill();
-  ctx.fillStyle = '#7fb2e5';
-  ctx.beginPath();
-  ctx.moveTo(178, 222); ctx.lineTo(178, 292); ctx.lineTo(146, 292);
-  ctx.closePath(); ctx.fill();
-
-  // lighthouse: two red stripes, or three in the twin
-  box(ctx, 468, 196, 54, 168, '#f4f1ea');
-  box(ctx, 468, 232, 54, 20, '#d94f4f');
-  box(ctx, 468, 292, 54, 20, '#d94f4f');
-  if (active.has('lighthouse')) box(ctx, 468, 262, 54, 14, '#d94f4f');
-  box(ctx, 480, 164, 30, 32, '#33404f');
-  disc(ctx, 495, 180, 8, '#ffe27a');
-  ctx.fillStyle = '#33404f';
-  ctx.beginPath();
-  ctx.moveTo(472, 164); ctx.lineTo(518, 164); ctx.lineTo(495, 144);
-  ctx.closePath(); ctx.fill();
-  box(ctx, 462, 360, 66, 10, '#8a8f98');
-
-  // beach umbrella and bucket (the same in both)
+  // Window, top left, with sky, hill, sun and red curtains.
+  rect(ctx, 40, 28, 180, 152);
+  fill(ctx, '#6b4423');
+  ctx.save();
+  rect(ctx, 50, 38, 160, 132);
+  ctx.clip();
+  rect(ctx, 50, 38, 160, 132);
+  fill(ctx, '#87ceeb');
+  circle(ctx, 182, 68, 18);
+  fill(ctx, '#ffd23f');
+  circle(ctx, 130, 205, 72);
+  fill(ctx, '#5da24a');
+  ctx.restore();
+  line(ctx, 130, 38, 130, 170);
   ctx.strokeStyle = '#6b4423';
-  ctx.lineWidth = 5;
-  ctx.beginPath(); ctx.moveTo(392, 402); ctx.lineTo(404, 470); ctx.stroke();
-  ctx.fillStyle = '#e56b9f';
-  ctx.beginPath(); ctx.arc(392, 402, 52, Math.PI, 0); ctx.closePath(); ctx.fill();
-  box(ctx, 428, 452, 34, 28, '#58a05c');
-
-  // crab: here, or gone in the twin
-  if (!active.has('crab')) {
-    oval(ctx, 330, 466, 20, 13, '#e5534b');
-    disc(ctx, 306, 452, 9, '#e5534b');
-    disc(ctx, 354, 452, 9, '#e5534b');
-    disc(ctx, 322, 458, 3, '#232733');
-    disc(ctx, 338, 458, 3, '#232733');
-    ctx.strokeStyle = '#e5534b';
-    ctx.lineWidth = 3;
-    for (const dx of [-14, 0, 14]) {
-      ctx.beginPath();
-      ctx.moveTo(330 + dx, 476);
-      ctx.lineTo(330 + dx * 1.5, 488);
-      ctx.stroke();
-    }
-  }
-
-  // shell: pink, or blue in the twin
-  ctx.fillStyle = active.has('shell') ? '#7fb2e5' : '#f2a0b5';
-  ctx.beginPath(); ctx.arc(112, 476, 18, Math.PI, 0); ctx.closePath(); ctx.fill();
-  ctx.strokeStyle = 'rgba(35,39,51,0.3)';
+  ctx.lineWidth = 3;
+  line(ctx, 50, 104, 210, 104);
+  rect(ctx, 34, 22, 26, 166);
+  fill(ctx, '#c0392b');
+  rect(ctx, 200, 22, 26, 166);
+  fill(ctx, '#c0392b');
+  ctx.strokeStyle = '#96281b';
   ctx.lineWidth = 2;
-  for (const dx of [-10, 0, 10]) {
-    ctx.beginPath();
-    ctx.moveTo(112 + dx, 476);
-    ctx.lineTo(112, 458);
-    ctx.stroke();
+  line(ctx, 42, 26, 42, 184);
+  line(ctx, 50, 26, 50, 184);
+  line(ctx, 208, 26, 208, 184);
+  line(ctx, 216, 26, 216, 184);
+
+  // Framed picture, top right: a star in the original, a moon in the twin.
+  rect(ctx, 418, 58, 104, 114);
+  fill(ctx, '#6b4423');
+  rect(ctx, 428, 68, 84, 94);
+  fill(ctx, '#dfe9f5');
+  if (!twin) {
+    starPath(ctx, 470, 115, 27, 11, 5);
+    fill(ctx, '#f5b301');
+  } else {
+    circle(ctx, 470, 115, 24);
+    fill(ctx, '#f5b301');
+    circle(ctx, 481, 108, 20);
+    fill(ctx, '#dfe9f5');
   }
 
-  // starfish: here in the original only (a spare difference)
-  if (!active.has('starfish')) fiveStar(ctx, 520, 474, 16, '#f2994a');
+  // Round wall clock near the top centre: 3 o'clock, or half past six.
+  circle(ctx, 300, 86, 34);
+  fill(ctx, '#ffffff');
+  ctx.strokeStyle = '#222222';
+  ctx.lineWidth = 4;
+  ctx.stroke();
+  ctx.fillStyle = '#222222';
+  for (let i = 0; i < 12; i++) {
+    const a = (Math.PI * i) / 6;
+    circle(ctx, 300 + Math.sin(a) * 27, 86 - Math.cos(a) * 27, i % 3 === 0 ? 2.5 : 1.5);
+    ctx.fill();
+  }
+  ctx.strokeStyle = '#222222';
+  ctx.lineWidth = 4;
+  ctx.lineCap = 'round';
+  if (!twin) {
+    line(ctx, 300, 86, 320, 86);
+    ctx.lineWidth = 3;
+    line(ctx, 300, 86, 300, 60);
+  } else {
+    line(ctx, 300, 86, 295, 105);
+    ctx.lineWidth = 3;
+    line(ctx, 300, 86, 300, 112);
+  }
+  circle(ctx, 300, 86, 3.5);
+  fill(ctx, '#222222');
+
+  // Bookshelf on the left, with coloured books on two shelves.
+  rect(ctx, 60, 200, 200, 148);
+  fill(ctx, '#7a4a21');
+  const shelf1 = [
+    [70, 16, '#c0392b'], [88, 14, '#2980b9'], [104, 18, '#27ae60'],
+    [124, 12, '#f39c12'], [138, 20, '#8e44ad'], [160, 14, '#16a085'],
+    [176, 16, '#e67e22'], [194, 22, '#f1c40f'],
+  ];
+  const shelf2 = [
+    [70, 18, '#e74c3c'], [90, 12, '#3498db'], [104, 16, '#2ecc71'],
+    [122, 20, '#9b59b6'], [144, 14, '#f39c12'], [160, 18, '#1abc9c'],
+    [180, 12, '#e67e22'], [194, 16, '#c0392b'], [212, 18, '#2980b9'],
+    [232, 14, '#27ae60'],
+  ];
+  shelf1.forEach(([x, w, c]) => { rect(ctx, x, 212, w, 56); fill(ctx, c); });
+  shelf2.forEach(([x, w, c]) => { rect(ctx, x, 282, w, 53); fill(ctx, c); });
+  rect(ctx, 66, 268, 188, 8);
+  fill(ctx, '#5a3413');
+  rect(ctx, 66, 335, 188, 8);
+  fill(ctx, '#5a3413');
+
+  // Side table with a lamp on the right: orange shade, or teal.
+  rect(ctx, 420, 308, 110, 12);
+  fill(ctx, '#7a4a21');
+  rect(ctx, 428, 320, 8, 62);
+  fill(ctx, '#5a3413');
+  rect(ctx, 514, 320, 8, 62);
+  fill(ctx, '#5a3413');
+  ellipse(ctx, 470, 308, 16, 5);
+  fill(ctx, '#3a3a3a');
+  ctx.strokeStyle = '#3a3a3a';
+  ctx.lineWidth = 4;
+  line(ctx, 470, 306, 470, 268);
+  circle(ctx, 470, 272, 10);
+  fill(ctx, '#fff7cc');
+  ctx.beginPath();
+  ctx.moveTo(448, 268);
+  ctx.lineTo(492, 268);
+  ctx.lineTo(500, 232);
+  ctx.lineTo(440, 232);
+  ctx.closePath();
+  fill(ctx, twin ? '#14b8a6' : '#f59e0b');
+
+  // Oval rug with a cat napping on it — the cat is gone in the twin.
+  ellipse(ctx, 300, 432, 145, 44);
+  fill(ctx, '#b23a48');
+  ellipse(ctx, 300, 432, 115, 32);
+  fill(ctx, '#d98a94');
+  ctx.strokeStyle = '#8e2f3c';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  if (!twin) {
+    ellipse(ctx, 300, 434, 48, 15);
+    fill(ctx, '#9aa0a6');
+    circle(ctx, 340, 420, 15);
+    fill(ctx, '#9aa0a6');
+    ctx.beginPath();
+    ctx.moveTo(330, 408);
+    ctx.lineTo(334, 394);
+    ctx.lineTo(340, 406);
+    ctx.closePath();
+    fill(ctx, '#9aa0a6');
+    ctx.beginPath();
+    ctx.moveTo(344, 406);
+    ctx.lineTo(350, 393);
+    ctx.lineTo(352, 408);
+    ctx.closePath();
+    fill(ctx, '#9aa0a6');
+    ctx.beginPath();
+    ctx.moveTo(256, 428);
+    ctx.quadraticCurveTo(238, 420, 244, 404);
+    ctx.quadraticCurveTo(250, 414, 258, 420);
+    ctx.closePath();
+    fill(ctx, '#9aa0a6');
+    ctx.strokeStyle = '#6b7280';
+    ctx.lineWidth = 2;
+    line(ctx, 288, 424, 288, 440);
+    line(ctx, 304, 424, 304, 442);
+    line(ctx, 318, 426, 318, 440);
+    line(ctx, 336, 418, 344, 418);
+  }
+
+  // Potted plant at bottom left: pink flower, or yellow.
+  ctx.beginPath();
+  ctx.moveTo(68, 428);
+  ctx.lineTo(116, 428);
+  ctx.lineTo(110, 464);
+  ctx.lineTo(74, 464);
+  ctx.closePath();
+  fill(ctx, '#c96f4a');
+  ctx.strokeStyle = '#3d8b40';
+  ctx.lineWidth = 4;
+  line(ctx, 92, 428, 92, 392);
+  ellipse(ctx, 78, 410, 14, 6);
+  ctx.save();
+  ctx.translate(78, 410);
+  ctx.rotate(-0.6);
+  ellipse(ctx, 0, 0, 14, 6);
+  fill(ctx, '#4caf50');
+  ctx.restore();
+  ellipse(ctx, 106, 408, 14, 6);
+  ctx.save();
+  ctx.translate(106, 408);
+  ctx.rotate(0.6);
+  ellipse(ctx, 0, 0, 14, 6);
+  fill(ctx, '#4caf50');
+  ctx.restore();
+  const petal = twin ? '#ffd23f' : '#f27fb0';
+  for (let i = 0; i < 5; i++) {
+    const a = (Math.PI * 2 * i) / 5 - Math.PI / 2;
+    circle(ctx, 92 + Math.cos(a) * 11, 382 + Math.sin(a) * 11, 9);
+    fill(ctx, petal);
+  }
+  circle(ctx, 92, 382, 7);
+  fill(ctx, '#f7b731');
 }
 
-// ---------------------------------------------------------------- the night market
-function paintMarket(ctx, active) {
-  box(ctx, 0, 0, 600, 430, '#1d2440'); // night sky
-  box(ctx, 0, 430, 600, 110, '#3a3049'); // ground
-  for (const [sx, sy] of [[40, 40], [200, 30], [330, 52], [560, 36], [150, 120], [420, 130]]) {
-    disc(ctx, sx, sy, 2.4, '#cfd8ff');
+// ---- Round 2: The Seaside ----
+
+function paintSeaside(ctx, variant) {
+  const twin = variant === 'twin';
+
+  // Sky, sea band and sandy beach.
+  rect(ctx, 0, 0, 600, 220);
+  fill(ctx, '#bfe6f7');
+  rect(ctx, 0, 220, 600, 160);
+  fill(ctx, '#2f7fc1');
+  rect(ctx, 0, 380, 600, 160);
+  fill(ctx, '#f0d69c');
+  ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+  ctx.lineWidth = 3;
+  ctx.lineCap = 'round';
+  [[80, 250], [260, 240], [430, 258], [150, 300], [340, 310], [500, 296], [90, 350], [280, 352], [460, 348]].forEach(([x, y]) => {
+    ctx.beginPath();
+    ctx.arc(x, y, 16, Math.PI * 1.15, Math.PI * 1.85);
+    ctx.stroke();
+  });
+
+  // Sun top right: plain, or wearing dark sunglasses.
+  ctx.strokeStyle = '#f5b301';
+  ctx.lineWidth = 5;
+  for (let i = 0; i < 8; i++) {
+    const a = (Math.PI * i) / 4;
+    line(ctx, 492 + Math.cos(a) * 42, 82 + Math.sin(a) * 42, 492 + Math.cos(a) * 54, 82 + Math.sin(a) * 54);
+  }
+  circle(ctx, 492, 82, 34);
+  fill(ctx, '#ffd23f');
+  if (twin) {
+    circle(ctx, 478, 80, 11);
+    fill(ctx, '#222222');
+    circle(ctx, 506, 80, 11);
+    fill(ctx, '#222222');
+    ctx.strokeStyle = '#222222';
+    ctx.lineWidth = 3;
+    line(ctx, 489, 80, 495, 80);
+    line(ctx, 467, 78, 458, 72);
+    line(ctx, 517, 78, 526, 72);
   }
 
-  // moon: a crescent, or full in the twin
-  disc(ctx, 82, 72, 30, '#f7e8b0');
-  if (!active.has('moon')) disc(ctx, 96, 62, 26, '#1d2440');
+  // White cloud top left, and a second small cloud in the twin only.
+  function cloud(cx, cy, s) {
+    circle(ctx, cx - 22 * s, cy + 4 * s, 16 * s);
+    fill(ctx, '#ffffff');
+    circle(ctx, cx, cy - 8 * s, 20 * s);
+    fill(ctx, '#ffffff');
+    circle(ctx, cx + 22 * s, cy + 4 * s, 16 * s);
+    fill(ctx, '#ffffff');
+    rect(ctx, cx - 36 * s, cy - 2 * s, 72 * s, 16 * s);
+    fill(ctx, '#ffffff');
+  }
+  cloud(120, 78, 1);
+  if (twin) cloud(238, 110, 0.72);
 
-  // lantern string: red lanterns, one of them gold in the twin
-  ctx.strokeStyle = '#0f1425';
+  // Sailboat on the sea: white sail, or red.
+  ctx.beginPath();
+  ctx.moveTo(140, 300);
+  ctx.lineTo(235, 300);
+  ctx.lineTo(220, 326);
+  ctx.lineTo(155, 326);
+  ctx.closePath();
+  fill(ctx, '#8b5a2b');
+  ctx.strokeStyle = '#6e451f';
+  ctx.lineWidth = 5;
+  line(ctx, 185, 300, 185, 195);
+  ctx.beginPath();
+  ctx.moveTo(188, 202);
+  ctx.lineTo(188, 292);
+  ctx.lineTo(242, 292);
+  ctx.closePath();
+  fill(ctx, twin ? '#e23b3b' : '#ffffff');
+  ctx.beginPath();
+  ctx.moveTo(185, 195);
+  ctx.lineTo(207, 201);
+  ctx.lineTo(185, 207);
+  ctx.closePath();
+  fill(ctx, '#e23b3b');
+
+  // Striped lighthouse on the right: two red stripes, or three.
+  ctx.beginPath();
+  ctx.moveTo(472, 380);
+  ctx.lineTo(528, 380);
+  ctx.lineTo(520, 185);
+  ctx.lineTo(480, 185);
+  ctx.closePath();
+  ctx.save();
+  ctx.clip();
+  rect(ctx, 470, 180, 60, 205);
+  fill(ctx, '#f5f0e6');
+  const bands = twin ? [[220, 242], [272, 294], [322, 344]] : [[235, 260], [305, 330]];
+  bands.forEach(([y1, y2]) => { rect(ctx, 470, y1, 60, y2 - y1); fill(ctx, '#d23b3b'); });
+  ctx.restore();
+  ctx.beginPath();
+  ctx.moveTo(472, 380);
+  ctx.lineTo(528, 380);
+  ctx.lineTo(520, 185);
+  ctx.lineTo(480, 185);
+  ctx.closePath();
+  ctx.strokeStyle = '#8a8378';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+  rect(ctx, 470, 166, 60, 20);
+  fill(ctx, '#222222');
+  circle(ctx, 500, 158, 11);
+  fill(ctx, '#ffe9a8');
+  ellipse(ctx, 480, 384, 26, 8);
+  fill(ctx, '#9a938a');
+  ellipse(ctx, 524, 386, 22, 7);
+  fill(ctx, '#9a938a');
+
+  // Beach umbrella and a green bucket on the sand.
+  ctx.strokeStyle = '#7a4a21';
+  ctx.lineWidth = 5;
+  line(ctx, 380, 380, 380, 470);
+  ctx.beginPath();
+  ctx.arc(380, 382, 58, Math.PI, 0);
+  ctx.closePath();
+  fill(ctx, '#e23b3b');
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(380, 382, 58, Math.PI, 0);
+  ctx.closePath();
+  ctx.clip();
+  for (let i = 0; i < 6; i += 2) {
+    ctx.beginPath();
+    ctx.moveTo(380, 382);
+    ctx.arc(380, 382, 58, Math.PI + (i * Math.PI) / 6, Math.PI + ((i + 1) * Math.PI) / 6);
+    ctx.closePath();
+    fill(ctx, '#ffffff');
+  }
+  ctx.restore();
+  ctx.strokeStyle = '#b02a2a';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(380, 382, 58, Math.PI, 0);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(420, 450);
+  ctx.lineTo(455, 450);
+  ctx.lineTo(450, 480);
+  ctx.lineTo(425, 480);
+  ctx.closePath();
+  fill(ctx, '#27ae60');
+  ctx.strokeStyle = '#1e8449';
   ctx.lineWidth = 3;
   ctx.beginPath();
-  ctx.moveTo(150, 52);
-  ctx.quadraticCurveTo(335, 108, 540, 56);
+  ctx.arc(437, 450, 14, Math.PI, 0);
   ctx.stroke();
-  const lanternAt = (x, y, gold) => {
-    disc(ctx, x, y, 20, gold ? 'rgba(242,201,76,0.30)' : 'rgba(229,83,75,0.30)');
-    oval(ctx, x, y, 15, 18, gold ? '#f2c94c' : '#e5534b');
-    box(ctx, x - 5, y - 22, 10, 5, '#8a6d2f');
-  };
-  lanternAt(180, 74, false);
-  lanternAt(265, 88, false);
-  lanternAt(350, 96, active.has('lantern'));
-  lanternAt(435, 90, false);
-  lanternAt(520, 74, false);
 
-  // left stall: red-and-white awning, or blue-and-white in the twin
-  box(ctx, 66, 262, 10, 168, '#5d4a33');
-  box(ctx, 244, 262, 10, 168, '#5d4a33');
-  for (let i = 0; i < 6; i += 1) {
-    ctx.fillStyle = i % 2 === 0 ? (active.has('awning') ? '#4f79c9' : '#d94f4f') : '#f4f1ea';
-    ctx.fillRect(50 + i * 37, 232, 37, 34);
-  }
-  box(ctx, 50, 330, 220, 100, '#6e5136');
-  box(ctx, 50, 330, 220, 14, '#8a6a45');
-  for (const [jx, color] of [[86, '#e8833a'], [126, '#58a05c'], [166, '#e5c84f'], [206, '#b565d9']]) {
-    box(ctx, jx, 356, 26, 40, color); // jars on the counter
-    box(ctx, jx, 348, 26, 8, '#4a3826');
+  // Small crab — present in the original only.
+  if (!twin) {
+    ctx.strokeStyle = '#c0392b';
+    ctx.lineWidth = 3;
+    line(ctx, 316, 456, 306, 448);
+    line(ctx, 316, 462, 304, 462);
+    line(ctx, 316, 468, 306, 476);
+    line(ctx, 344, 456, 354, 448);
+    line(ctx, 344, 462, 356, 462);
+    line(ctx, 344, 468, 354, 476);
+    ellipse(ctx, 330, 462, 17, 11);
+    fill(ctx, '#e74c3c');
+    circle(ctx, 310, 452, 6);
+    fill(ctx, '#e74c3c');
+    circle(ctx, 350, 452, 6);
+    fill(ctx, '#e74c3c');
+    circle(ctx, 324, 450, 2.5);
+    fill(ctx, '#222222');
+    circle(ctx, 336, 450, 2.5);
+    fill(ctx, '#222222');
   }
 
-  // right stall and its hanging sign: a star, or a fish in the twin
-  box(ctx, 346, 272, 10, 158, '#5d4a33');
-  box(ctx, 544, 272, 10, 158, '#5d4a33');
-  for (let i = 0; i < 6; i += 1) {
-    ctx.fillStyle = i % 2 === 0 ? '#3fa7a0' : '#f4f1ea';
-    ctx.fillRect(338 + i * 37, 242, 37, 34);
-  }
-  box(ctx, 338, 340, 222, 90, '#6e5136');
-  box(ctx, 430, 198, 90, 64, '#2c3550');
-  ctx.strokeStyle = '#8a6d2f';
-  ctx.lineWidth = 3;
-  ctx.strokeRect(430, 198, 90, 64);
-  if (active.has('sign')) {
-    ctx.fillStyle = '#7fd1c0'; // a simple fish
-    oval(ctx, 475, 232, 22, 11, '#7fd1c0');
-    ctx.beginPath();
-    ctx.moveTo(495, 232); ctx.lineTo(510, 220); ctx.lineTo(510, 244);
-    ctx.closePath(); ctx.fill();
-    disc(ctx, 466, 229, 3, '#2c3550');
-  } else {
-    fiveStar(ctx, 475, 232, 17, '#f2c94c');
-  }
-  // the roof cat: sitting on the right stall in the original only
-  if (!active.has('roofcat')) sleepingCat(ctx, 452, 226, 0.62, '#12172a');
-
-  // food cart in the middle, and its steam: three wisps, or one in the twin
-  box(ctx, 255, 352, 90, 58, '#94502e');
-  box(ctx, 248, 340, 104, 12, '#c97b45');
-  disc(ctx, 272, 420, 11, '#232733');
-  disc(ctx, 328, 420, 11, '#232733');
-  ctx.strokeStyle = 'rgba(230,238,255,0.75)';
-  ctx.lineWidth = 4;
-  const wisp = (x) => {
-    ctx.beginPath();
-    ctx.moveTo(x, 336);
-    ctx.quadraticCurveTo(x - 8, 318, x, 302);
-    ctx.quadraticCurveTo(x + 8, 288, x, 274);
-    ctx.stroke();
-  };
-  wisp(300);
-  if (!active.has('steam')) { wisp(276); wisp(324); }
-
-  // string lights down the right edge: five bulbs, or four in the twin
-  ctx.strokeStyle = '#0f1425';
+  // Shell on the sand: pink, or blue.
+  ctx.beginPath();
+  ctx.arc(112, 470, 18, Math.PI, 0);
+  ctx.closePath();
+  fill(ctx, twin ? '#7fb3f7' : '#f7a8b8');
+  ctx.strokeStyle = twin ? '#4a7fc1' : '#d67b90';
   ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.moveTo(545, 250); ctx.lineTo(545, 372); ctx.stroke();
-  const bulbs = active.has('bulbs') ? [262, 290, 318, 346] : [262, 290, 318, 346, 372];
-  for (const by of bulbs) disc(ctx, 545, by, 7, '#ffe27a');
+  line(ctx, 112, 470, 112, 452);
+  line(ctx, 112, 470, 100, 456);
+  line(ctx, 112, 470, 124, 456);
+  line(ctx, 112, 470, 94, 464);
+  line(ctx, 112, 470, 130, 464);
+
+  // Starfish on the sand (drawn the same on both panels).
+  starPath(ctx, 520, 474, 16, 7, 5);
+  fill(ctx, '#f39c12');
 }
 
-/** The scenes by id: painter plus the differences, in round order. */
-export const SCENES = {
-  room: {
-    paint: paintRoom,
-    diffs: [
-      { id: 'picture', x: 470, y: 115, r: 42 },
-      { id: 'clock', x: 300, y: 86, r: 38 },
-      { id: 'lamp', x: 470, y: 250, r: 38 },
-      { id: 'cat', x: 300, y: 430, r: 48 },
-      { id: 'flower', x: 92, y: 382, r: 30 },
-      { id: 'book', x: 208, y: 240, r: 32 },
-    ],
-  },
-  seaside: {
-    paint: paintSeaside,
-    diffs: [
-      { id: 'sail', x: 202, y: 256, r: 42 },
-      { id: 'sun', x: 492, y: 82, r: 46 },
-      { id: 'lighthouse', x: 495, y: 268, r: 44 },
-      { id: 'cloud', x: 238, y: 110, r: 32 },
-      { id: 'crab', x: 330, y: 462, r: 32 },
-      { id: 'shell', x: 112, y: 470, r: 26 },
-      { id: 'starfish', x: 520, y: 474, r: 26 },
-    ],
-  },
-  market: {
-    paint: paintMarket,
-    diffs: [
-      { id: 'moon', x: 82, y: 72, r: 38 },
-      { id: 'lantern', x: 350, y: 96, r: 28 },
-      { id: 'awning', x: 160, y: 250, r: 46 },
-      { id: 'sign', x: 475, y: 232, r: 38 },
-      { id: 'roofcat', x: 460, y: 214, r: 30 },
-      { id: 'steam', x: 300, y: 306, r: 34 },
-      { id: 'bulbs', x: 545, y: 330, r: 26 },
-    ],
-  },
-};
+// ---- Round 3: The Night Market ----
+
+function paintNightMarket(ctx, variant) {
+  const twin = variant === 'twin';
+
+  // Dark night sky, stars, and dark ground.
+  rect(ctx, 0, 0, 600, 360);
+  fill(ctx, '#141d42');
+  rect(ctx, 0, 360, 600, 180);
+  fill(ctx, '#2b2438');
+  const rng = makeRandom(7);
+  for (let i = 0; i < 46; i++) {
+    const x = rng() * 600;
+    const y = rng() * 330;
+    ctx.globalAlpha = 0.35 + rng() * 0.6;
+    circle(ctx, x, y, 0.8 + rng() * 1.3);
+    fill(ctx, '#ffffff');
+  }
+  ctx.globalAlpha = 1;
+
+  // Pale moon top left: a crescent, or full.
+  circle(ctx, 82, 72, 26);
+  fill(ctx, '#f5eeda');
+  if (!twin) {
+    circle(ctx, 95, 65, 22);
+    fill(ctx, '#141d42');
+  }
+
+  // A string of red paper lanterns sagging across the top.
+  function wireY(x) {
+    const t = x / 600;
+    return (1 - t) * (1 - t) * 70 + 2 * (1 - t) * t * 132 + t * t * 70;
+  }
+  ctx.strokeStyle = '#0a0f24';
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.moveTo(20, wireY(20));
+  ctx.quadraticCurveTo(300, 132, 580, wireY(580));
+  ctx.stroke();
+  [90, 160, 230, 300, 350, 410, 480, 540].forEach((x) => {
+    const y = wireY(x);
+    const middle = x === 350;
+    ellipse(ctx, x, y + 14, 15, 19);
+    fill(ctx, middle && twin ? '#f5b301' : '#e23b3b');
+    ctx.strokeStyle = '#8e1f1f';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    rect(ctx, x - 6, y - 6, 12, 5);
+    fill(ctx, '#f5b301');
+    ctx.strokeStyle = '#f5b301';
+    ctx.lineWidth = 2;
+    line(ctx, x, y + 33, x, y + 41);
+  });
+
+  // Left stall with a striped awning and coloured jars on its counter.
+  ctx.strokeStyle = '#5a3a1a';
+  ctx.lineWidth = 8;
+  line(ctx, 90, 265, 90, 395);
+  line(ctx, 250, 265, 250, 395);
+  rect(ctx, 80, 330, 180, 62);
+  fill(ctx, '#7a4a21');
+  ctx.strokeStyle = '#5a3413';
+  ctx.lineWidth = 2;
+  line(ctx, 80, 352, 260, 352);
+  line(ctx, 80, 372, 260, 372);
+  const awningA = twin ? '#3b82f6' : '#e23b3b';
+  for (let i = 0; i < 10; i++) {
+    rect(ctx, 75 + i * 19, 225, 19, 42);
+    fill(ctx, i % 2 === 0 ? awningA : '#ffffff');
+  }
+  for (let i = 0; i < 10; i++) {
+    ctx.beginPath();
+    ctx.arc(75 + i * 19 + 9.5, 267, 9.5, 0, Math.PI);
+    fill(ctx, i % 2 === 0 ? awningA : '#ffffff');
+  }
+  const jars = [[120, 310, '#e74c3c'], [160, 305, '#27ae60'], [200, 312, '#f39c12']];
+  jars.forEach(([x, y, c]) => {
+    rr(ctx, x - 14, y, 28, 30, 6);
+    fill(ctx, c);
+    rect(ctx, x - 10, y - 6, 20, 7);
+    fill(ctx, '#d9c9a8');
+  });
+
+  // Right stall with a striped awning and a hanging sign.
+  ctx.strokeStyle = '#5a3a1a';
+  ctx.lineWidth = 8;
+  line(ctx, 390, 265, 390, 395);
+  line(ctx, 540, 265, 540, 395);
+  rect(ctx, 380, 330, 160, 62);
+  fill(ctx, '#7a4a21');
+  ctx.strokeStyle = '#5a3413';
+  ctx.lineWidth = 2;
+  line(ctx, 380, 352, 540, 352);
+  line(ctx, 380, 372, 540, 372);
+  for (let i = 0; i < 10; i++) {
+    rect(ctx, 375 + i * 19, 225, 19, 42);
+    fill(ctx, i % 2 === 0 ? '#27ae60' : '#ffffff');
+  }
+  for (let i = 0; i < 10; i++) {
+    ctx.beginPath();
+    ctx.arc(375 + i * 19 + 9.5, 267, 9.5, 0, Math.PI);
+    fill(ctx, i % 2 === 0 ? '#27ae60' : '#ffffff');
+  }
+  // Hanging sign: a gold star in the original, a teal fish in the twin.
+  ctx.strokeStyle = '#3a2f1a';
+  ctx.lineWidth = 2;
+  line(ctx, 458, 225, 458, 214);
+  line(ctx, 492, 225, 492, 214);
+  rr(ctx, 448, 214, 54, 36, 6);
+  fill(ctx, '#3a2f1a');
+  if (!twin) {
+    starPath(ctx, 475, 232, 14, 6, 5);
+    fill(ctx, '#f5b301');
+  } else {
+    ellipse(ctx, 475, 232, 15, 8);
+    fill(ctx, '#14b8a6');
+    ctx.beginPath();
+    ctx.moveTo(488, 232);
+    ctx.lineTo(498, 224);
+    ctx.lineTo(498, 240);
+    ctx.closePath();
+    fill(ctx, '#14b8a6');
+    circle(ctx, 466, 230, 2);
+    fill(ctx, '#0e1526');
+  }
+  // A cat sitting on the right stall roof — present in the original only.
+  if (!twin) {
+    ellipse(ctx, 452, 212, 13, 11);
+    fill(ctx, '#1a1a2e');
+    circle(ctx, 462, 196, 9);
+    fill(ctx, '#1a1a2e');
+    ctx.beginPath();
+    ctx.moveTo(455, 189);
+    ctx.lineTo(457, 180);
+    ctx.lineTo(461, 188);
+    ctx.closePath();
+    fill(ctx, '#1a1a2e');
+    ctx.beginPath();
+    ctx.moveTo(465, 188);
+    ctx.lineTo(469, 180);
+    ctx.lineTo(471, 189);
+    ctx.closePath();
+    fill(ctx, '#1a1a2e');
+    ctx.beginPath();
+    ctx.moveTo(440, 218);
+    ctx.quadraticCurveTo(430, 212, 436, 202);
+    ctx.quadraticCurveTo(442, 208, 444, 216);
+    ctx.closePath();
+    fill(ctx, '#1a1a2e');
+  }
+
+  // Small food cart in the middle with steam rising.
+  rect(ctx, 250, 322, 104, 26);
+  for (let i = 0; i < 6; i++) {
+    rect(ctx, 250 + i * 18, 322, 18, 26);
+    fill(ctx, i % 2 === 0 ? '#e23b3b' : '#ffffff');
+  }
+  rect(ctx, 258, 348, 88, 84);
+  fill(ctx, '#0f766e');
+  rect(ctx, 250, 348, 104, 12);
+  fill(ctx, '#115e59');
+  circle(ctx, 278, 438, 10);
+  fill(ctx, '#222222');
+  circle(ctx, 326, 438, 10);
+  fill(ctx, '#222222');
+  circle(ctx, 278, 438, 4);
+  fill(ctx, '#9aa0a6');
+  circle(ctx, 326, 438, 4);
+  fill(ctx, '#9aa0a6');
+  ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+  ctx.lineWidth = 4;
+  ctx.lineCap = 'round';
+  const wisps = twin ? [300] : [286, 300, 314];
+  wisps.forEach((x) => {
+    ctx.beginPath();
+    ctx.moveTo(x, 330);
+    ctx.bezierCurveTo(x - 7, 318, x + 7, 310, x - 3, 298);
+    ctx.bezierCurveTo(x - 7, 290, x + 4, 286, x, 280);
+    ctx.stroke();
+  });
+
+  // A string of glowing bulbs down the right edge: five, or four.
+  ctx.strokeStyle = '#0a0f24';
+  ctx.lineWidth = 2.5;
+  line(ctx, 545, 250, 545, 430);
+  const bulbYs = twin ? [272, 308, 380, 414] : [272, 308, 344, 380, 414];
+  bulbYs.forEach((y) => {
+    circle(ctx, 545, y, 12);
+    ctx.fillStyle = 'rgba(255,217,122,0.25)';
+    ctx.fill();
+    circle(ctx, 545, y, 7);
+    fill(ctx, '#ffd97a');
+  });
+}

@@ -1,118 +1,132 @@
-// TWIN SCENES' rules and state, with no drawing and no browser in it: which round
-// is on, which differences are found, the clock, the score, hints, and the little
-// animations (a found marker pops in, a wrong click flashes). Methods return event
-// flags so the caller can play sounds without the world knowing about audio.
-import { HINTS_PER_GAME, MISTAKE_TIME_PENALTY, POINTS_PER_FIND, ROUNDS, ROUND_CLEAR_BONUS } from './config.js';
-import { SCENES } from './scenes.js';
+// TWIN SCENES — state, rules and events. Pure logic: no drawing, no browser.
+// The renderer reads this state; the boot code in main.js owns the browser.
 
-export const EVENT_FOUND = 1;
-export const EVENT_MISS = 2;
-export const EVENT_ROUND_CLEAR = 4;
-export const EVENT_GAME_CLEAR = 8;
-export const EVENT_HINT = 16;
+import {
+  ROUNDS,
+  POINTS_PER_FIND,
+  MISTAKE_PENALTY,
+  WRONG_TIME_PENALTY_S,
+  HINTS_PER_GAME,
+  HINT_PULSE_MS,
+  FLASH_MS,
+  PANEL_W,
+  PANEL_H,
+  PANEL_Y,
+  LEFT_X,
+  RIGHT_X,
+} from './config.js';
+import { activeDifferences } from './scenes.js';
 
-export const PHASE_TITLE = 'title';
-export const PHASE_PLAY = 'play';
-export const PHASE_ROUND_CLEAR = 'roundclear';
-export const PHASE_CLEAR = 'clear';
-
-export function roundDiffs(roundIndex) {
-  const round = ROUNDS[roundIndex];
-  return SCENES[round.scene].diffs.slice(0, round.diffs);
+export function createWorld() {
+  return {
+    screen: 'title', // 'title' | 'playing' | 'roundClear' | 'allClear'
+    round: 0,
+    found: [],
+    foundAt: {},
+    mistakes: 0,
+    hintsLeft: HINTS_PER_GAME,
+    score: 0,
+    elapsed: 0, // seconds, while playing
+    totalFound: 0,
+    flashes: [], // { panel, x, y, until } in panel-local coords
+    hintPulse: null, // { diff, until }
+    now: 0, // ms clock advanced by tick()
+    muted: false,
+    best: 0,
+    bestSaved: false,
+    newBest: false,
+  };
 }
 
-export function createGame() {
-  const state = {
-    phase: PHASE_TITLE,
-    roundIndex: 0,
-    found: new Set(),
-    elapsed: 0,
-    score: 0,
-    hintsLeft: HINTS_PER_GAME,
-    mistakes: 0,
-    marks: [], // {diffId, t} — t counts down from 1 as the marker pops
-    flashes: [], // {x, y, t} — wrong-click crosses, panel coordinates + side
-    hintId: null,
-    hintT: 0,
-    totalFound: 0,
-  };
+export function startGame(w) {
+  w.screen = 'playing';
+  w.round = 0;
+  w.found = [];
+  w.foundAt = {};
+  w.mistakes = 0;
+  w.hintsLeft = HINTS_PER_GAME;
+  w.score = 0;
+  w.elapsed = 0;
+  w.totalFound = 0;
+  w.flashes = [];
+  w.hintPulse = null;
+  w.bestSaved = false;
+  w.newBest = false;
+}
 
-  function startRound(index) {
-    state.roundIndex = index;
-    state.found = new Set();
-    state.marks = [];
-    state.hintId = null;
-    state.hintT = 0;
-    state.phase = PHASE_PLAY;
-  }
+export function roundClearBonus(w) {
+  return 100 + 20 * w.hintsLeft;
+}
 
-  function startGame() {
-    state.elapsed = 0;
-    state.score = 0;
-    state.hintsLeft = HINTS_PER_GAME;
-    state.mistakes = 0;
-    state.totalFound = 0;
-    state.flashes = [];
-    startRound(0);
-  }
+export function remaining(w) {
+  return activeDifferences(w.round).length - w.found.length;
+}
 
-  function remaining() {
-    return roundDiffs(state.roundIndex).length - state.found.size;
-  }
+export function panelAt(x, y) {
+  if (y < PANEL_Y || y > PANEL_Y + PANEL_H) return null;
+  if (x >= LEFT_X && x <= LEFT_X + PANEL_W) return { panel: 'left', lx: x - LEFT_X, ly: y - PANEL_Y };
+  if (x >= RIGHT_X && x <= RIGHT_X + PANEL_W) return { panel: 'right', lx: x - RIGHT_X, ly: y - PANEL_Y };
+  return null;
+}
 
-  /** A click inside a panel, in panel coordinates. `side` is 'left' or 'right'. */
-  function click(side, x, y) {
-    if (state.phase !== PHASE_PLAY) return 0;
-    for (const diff of roundDiffs(state.roundIndex)) {
-      if (state.found.has(diff.id)) continue;
-      const dx = x - diff.x;
-      const dy = y - diff.y;
-      if (dx * dx + dy * dy <= diff.r * diff.r) {
-        state.found.add(diff.id);
-        state.totalFound += 1;
-        state.score += POINTS_PER_FIND;
-        state.marks.push({ diffId: diff.id, t: 1 });
-        if (state.hintId === diff.id) { state.hintId = null; state.hintT = 0; }
-        if (remaining() === 0) {
-          state.score += ROUND_CLEAR_BONUS;
-          const last = state.roundIndex === ROUNDS.length - 1;
-          state.phase = last ? PHASE_CLEAR : PHASE_ROUND_CLEAR;
-          return EVENT_FOUND | (last ? EVENT_GAME_CLEAR : EVENT_ROUND_CLEAR);
-        }
-        return EVENT_FOUND;
+export function clickAt(w, x, y) {
+  if (w.screen !== 'playing') return { type: 'none' };
+  const hit = panelAt(x, y);
+  if (!hit) return { type: 'none' };
+  const diffs = activeDifferences(w.round);
+  for (const d of diffs) {
+    if (w.found.includes(d.id)) continue;
+    const dx = hit.lx - d.x;
+    const dy = hit.ly - d.y;
+    if (dx * dx + dy * dy <= d.r * d.r) {
+      w.found.push(d.id);
+      w.foundAt[d.id] = w.now;
+      w.score += POINTS_PER_FIND;
+      w.totalFound += 1;
+      const cleared = w.found.length === diffs.length;
+      if (cleared) {
+        w.score += roundClearBonus(w);
+        w.screen = 'roundClear';
       }
-    }
-    state.mistakes += 1;
-    state.elapsed += MISTAKE_TIME_PENALTY;
-    state.flashes.push({ side, x, y, t: 1 });
-    return EVENT_MISS;
-  }
-
-  function useHint() {
-    if (state.phase !== PHASE_PLAY || state.hintsLeft <= 0 || state.hintT > 0) return 0;
-    const next = roundDiffs(state.roundIndex).find((diff) => !state.found.has(diff.id));
-    if (!next) return 0;
-    state.hintsLeft -= 1;
-    state.hintId = next.id;
-    state.hintT = 1.6;
-    return EVENT_HINT;
-  }
-
-  function nextRound() {
-    if (state.phase === PHASE_ROUND_CLEAR) startRound(state.roundIndex + 1);
-  }
-
-  function tick(dt) {
-    if (state.phase === PHASE_PLAY) state.elapsed += dt;
-    for (const mark of state.marks) mark.t = Math.max(0, mark.t - dt * 2.2);
-    state.marks = state.marks.filter((mark) => mark.t > 0);
-    for (const flash of state.flashes) flash.t = Math.max(0, flash.t - dt * 1.6);
-    state.flashes = state.flashes.filter((flash) => flash.t > 0);
-    if (state.hintT > 0) {
-      state.hintT = Math.max(0, state.hintT - dt);
-      if (state.hintT === 0) state.hintId = null;
+      return { type: 'find', diff: d, cleared };
     }
   }
+  w.mistakes += 1;
+  w.score = Math.max(0, w.score - MISTAKE_PENALTY);
+  w.elapsed += WRONG_TIME_PENALTY_S;
+  w.flashes.push({ panel: hit.panel, x: hit.lx, y: hit.ly, until: w.now + FLASH_MS });
+  return { type: 'miss' };
+}
 
-  return { state, startGame, startRound, click, useHint, nextRound, remaining };
+export function useHint(w) {
+  if (w.screen !== 'playing' || w.hintsLeft <= 0) return null;
+  const unfound = activeDifferences(w.round).filter((d) => !w.found.includes(d.id));
+  if (unfound.length === 0) return null;
+  const diff = unfound[Math.floor(Math.random() * unfound.length)];
+  w.hintsLeft -= 1;
+  w.hintPulse = { diff, until: w.now + HINT_PULSE_MS };
+  return diff;
+}
+
+// Advance from a round-clear screen: next round, or the all-clear summary.
+export function advance(w) {
+  if (w.screen !== 'roundClear') return false;
+  if (w.round + 1 < ROUNDS.length) {
+    w.round += 1;
+    w.found = [];
+    w.foundAt = {};
+    w.flashes = [];
+    w.hintPulse = null;
+    w.screen = 'playing';
+    return true;
+  }
+  w.screen = 'allClear';
+  return true;
+}
+
+export function tick(w, dtMs) {
+  w.now += dtMs;
+  if (w.screen === 'playing') w.elapsed += dtMs / 1000;
+  w.flashes = w.flashes.filter((f) => f.until > w.now);
+  if (w.hintPulse && w.hintPulse.until <= w.now) w.hintPulse = null;
 }
